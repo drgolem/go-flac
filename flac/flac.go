@@ -77,7 +77,7 @@ type FlacDecoder struct {
 	maxOutputSampleBitDepth int
 	streamBytesPerSample    int
 
-	ringBuffer ringbuffer.RingBuffer
+	ringBuffer *ringbuffer.RingBuffer
 	b16        [2]byte
 	b24        [3]byte
 }

@@ -1,5 +1,5 @@
 module github.com/drgolem/go-flac
 
-go 1.18
+go 1.25
 
-require github.com/drgolem/ringbuffer v0.0.0-20221021062907-cab3d32a4a22
+require github.com/drgolem/ringbuffer v0.0.0-20260206083538-2042166cd2a8

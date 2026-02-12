@@ -2,25 +2,27 @@ package main
 
 import (
 	"fmt"
+	"io"
+	"log/slog"
 	"os"
 
 	"github.com/drgolem/go-flac/flac"
 )
 
 func main() {
-	fmt.Println("example decode flac to wav file")
+	slog.Info("FLAC to RAW converter")
 
 	if len(os.Args) != 3 {
 		fmt.Fprintln(os.Stderr, "usage: flac2raw <infile.flac> <outfile.raw>")
-		fmt.Fprintln(os.Stderr, "play: ffplay -ar 44100 -ac 2 -f s16le <outfile.raw>")
+		fmt.Fprintln(os.Stderr, "play: ffplay  -f s16le -ar 44100 -ch_layout stereo <outfile.raw>")
 		return
 	}
 
 	inFile := os.Args[1]
 	outFile := os.Args[2]
-	fmt.Printf("infile: %s, outfile: %s\n", inFile, outFile)
+	slog.Info("Processing files", "input", inFile, "output", outFile)
 
-	fmt.Printf("libFLAC version: %s\n", flac.GetVersion())
+	slog.Info("libFLAC version", "version", flac.GetVersion())
 
 	outBitsPerSample := 16
 	outBytesPerSample := outBitsPerSample / 8
@@ -33,21 +35,27 @@ func main() {
 
 	err = dec.Open(inFile)
 	if err != nil {
-		fmt.Printf("ERR: %v\n", err)
+		slog.Error("Failed to open file", "error", err)
+		return
 	}
 	defer dec.Close()
 
-	fmt.Printf("decoder state: %s\n", dec.GetResolvedState())
+	slog.Info("Decoder state", "state", dec.GetResolvedState())
 
-	fmt.Printf("current sample: %d\n", dec.TellCurrentSample())
-	fmt.Printf("total samples: %d\n", dec.TotalSamples())
+	slog.Info("Stream info",
+		"current_sample", dec.TellCurrentSample(),
+		"total_samples", dec.TotalSamples())
 
 	rate, channels, bitsPerSample := dec.GetFormat()
-	fmt.Printf("Format: [%d:%d:%d]\n", rate, channels, bitsPerSample)
+	slog.Info("Audio format",
+		"sample_rate", rate,
+		"channels", channels,
+		"bits_per_sample", bitsPerSample)
 
 	fOut, err := os.Create(outFile)
 	if err != nil {
-		fmt.Printf("ERR: %v\n", err)
+		slog.Error("Failed to create output file", "error", err)
+		return
 	}
 	defer fOut.Close()
 
@@ -58,7 +66,9 @@ func main() {
 	for {
 		sampleCnt, err := dec.DecodeSamples(audioSamples, audio)
 		if err != nil {
-			fmt.Printf("ERR: %v\n", err)
+			if err != io.EOF {
+				slog.Error("Failed to decode samples", "error", err)
+			}
 			break
 		}
 		if sampleCnt == 0 {
@@ -69,5 +79,5 @@ func main() {
 		fOut.Write(audio[:bytesToWrite])
 	}
 	fOut.Sync()
-	fmt.Printf("current sample: %d\n", dec.TellCurrentSample())
+	slog.Info("Decoding complete", "final_sample", dec.TellCurrentSample())
 }

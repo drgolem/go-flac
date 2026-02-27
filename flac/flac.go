@@ -236,8 +236,10 @@ func (d *FlacDecoder) TellCurrentSample() int64 {
 }
 
 // GetFormat returns the audio format parameters.
+// The returned bitsPerSample reflects the effective output bit depth,
+// which is min(file native depth, maxOutputSampleBitDepth).
 func (d *FlacDecoder) GetFormat() (int, int, int) {
-	return int(d.rate), d.channels, d.bitsPerSample
+	return int(d.rate), d.channels, d.outputBytesPerSample * 8
 }
 
 // DecodeSamples decodes the specified number of audio samples into the provided buffer.
@@ -469,7 +471,7 @@ func decoderWriteCallback(decoder *C.FLAC__StreamDecoder, frame *C.FLAC__Frame, 
 			switch dec.streamBytesPerSample {
 			case 3:
 				int32toInt24LEBytes(sample, &dec.b24)
-				if dec.maxOutputSampleBitDepth == bitDepth24 {
+				if dec.outputBytesPerSample >= 3 {
 					if _, err := dec.ringBuffer.Write(dec.b24[:3]); err != nil {
 						slog.Error("Failed to write 24-bit sample", "error", err)
 						dec.setError(err)
@@ -533,6 +535,15 @@ func decoderMetadataCallback(d *C.FLAC__StreamDecoder, metadata *C.FLAC__StreamM
 		dec.rate = int64(C.get_decoder_rate(metadata))
 		dec.streamBytesPerSample = (dec.bitsPerSample + 7) / 8
 		dec.totalSamples = int64(C.get_total_samples(metadata))
+
+		// Recalculate effective output bytes per sample now that we know
+		// the file's native bit depth. Output at native depth unless
+		// maxOutputSampleBitDepth is explicitly lower.
+		effectiveBits := dec.bitsPerSample
+		if dec.maxOutputSampleBitDepth > 0 && dec.maxOutputSampleBitDepth < dec.bitsPerSample {
+			effectiveBits = dec.maxOutputSampleBitDepth
+		}
+		dec.outputBytesPerSample = effectiveBits / 8
 	}
 }
 

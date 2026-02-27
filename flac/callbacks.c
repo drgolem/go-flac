@@ -1,6 +1,8 @@
 #include "FLAC/stream_decoder.h"
 #include "FLAC/stream_encoder.h"
 
+#include <string.h>
+
 #include "_cgo_export.h"
 
 extern int
@@ -25,6 +27,36 @@ extern FLAC__uint64
 get_total_samples(FLAC__StreamMetadata *metadata)
 {
     return metadata->data.stream_info.total_samples;
+}
+
+extern unsigned int
+get_min_blocksize(FLAC__StreamMetadata *metadata)
+{
+    return metadata->data.stream_info.min_blocksize;
+}
+
+extern unsigned int
+get_max_blocksize(FLAC__StreamMetadata *metadata)
+{
+    return metadata->data.stream_info.max_blocksize;
+}
+
+extern unsigned int
+get_min_framesize(FLAC__StreamMetadata *metadata)
+{
+    return metadata->data.stream_info.min_framesize;
+}
+
+extern unsigned int
+get_max_framesize(FLAC__StreamMetadata *metadata)
+{
+    return metadata->data.stream_info.max_framesize;
+}
+
+extern void
+get_md5_signature(FLAC__StreamMetadata *metadata, uint8_t *out)
+{
+    memcpy(out, metadata->data.stream_info.md5sum, 16);
 }
 
 void

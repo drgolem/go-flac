@@ -186,11 +186,14 @@ func (d *FlacDecoder) Open(filePath string) error {
 	d.lastError = nil
 	d.ringBuffer.Reset()
 
+	// Pass the handle value directly as client_data (not a pointer to it).
+	// Storing a Go pointer (&d.hDecoder) in C memory violates cgo rules and
+	// can cause "bad pointer in Go heap" crashes during GC.
 	status := C.FLAC__stream_decoder_init_file(d.decoder, filename,
 		writeCallback,
 		metadataCallback,
 		errorCallback,
-		unsafe.Pointer(&d.hDecoder),
+		unsafe.Pointer(d.hDecoder),
 	)
 
 	if status != C.FLAC__STREAM_DECODER_INIT_STATUS_OK {
@@ -407,7 +410,7 @@ func (d *FlacDecoder) setError(err error) {
 
 //export decoderErrorCallback
 func decoderErrorCallback(d *C.FLAC__StreamDecoder, status C.FLAC__StreamDecoderErrorStatus, data unsafe.Pointer) {
-	h := *(*cgo.Handle)(data)
+	h := cgo.Handle(data)
 	dec := h.Value().(*FlacDecoder)
 
 	var errMsg string
@@ -437,7 +440,7 @@ func decoderErrorCallback(d *C.FLAC__StreamDecoder, status C.FLAC__StreamDecoder
 //export decoderWriteCallback
 func decoderWriteCallback(decoder *C.FLAC__StreamDecoder, frame *C.FLAC__Frame, buffer **C.FLAC__int32, client_data unsafe.Pointer) C.FLAC__StreamDecoderWriteStatus {
 
-	h := *(*cgo.Handle)(client_data)
+	h := cgo.Handle(client_data)
 	dec := h.Value().(*FlacDecoder)
 
 	sampleCount := int64(frame.header.blocksize)
@@ -526,7 +529,7 @@ func decoderWriteCallback(decoder *C.FLAC__StreamDecoder, frame *C.FLAC__Frame, 
 
 //export decoderMetadataCallback
 func decoderMetadataCallback(d *C.FLAC__StreamDecoder, metadata *C.FLAC__StreamMetadata, client_data unsafe.Pointer) {
-	h := *(*cgo.Handle)(client_data)
+	h := cgo.Handle(client_data)
 	dec := h.Value().(*FlacDecoder)
 
 	if metadata._type == C.FLAC__METADATA_TYPE_STREAMINFO {

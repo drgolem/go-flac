@@ -189,7 +189,7 @@ func (e *FlacEncoder) InitStream() error {
 		nil, // no seek callback
 		nil, // no tell callback
 		metadataCallback,
-		unsafe.Pointer(&e.hEncoder),
+		unsafe.Pointer(e.hEncoder),
 	)
 	if status != C.FLAC__STREAM_ENCODER_INIT_STATUS_OK {
 		return fmt.Errorf("init stream encoder error: %s", getStreamEncoderInitStatusString(status))
@@ -310,7 +310,7 @@ func encoderWriteCallback(
 	currentFrame C.uint32_t,
 	clientData unsafe.Pointer,
 ) C.FLAC__StreamEncoderWriteStatus {
-	h := *(*cgo.Handle)(clientData)
+	h := cgo.Handle(clientData)
 	enc := h.Value().(*FlacEncoder)
 
 	data := C.GoBytes(unsafe.Pointer(buffer), C.int(bytes))
@@ -328,7 +328,7 @@ func encoderMetadataCallback(
 	metadata *C.FLAC__StreamMetadata,
 	clientData unsafe.Pointer,
 ) {
-	h := *(*cgo.Handle)(clientData)
+	h := cgo.Handle(clientData)
 	enc := h.Value().(*FlacEncoder)
 
 	if metadata._type != C.FLAC__METADATA_TYPE_STREAMINFO {

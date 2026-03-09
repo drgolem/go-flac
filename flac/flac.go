@@ -5,6 +5,7 @@ package flac
 #include <FLAC/format.h>
 #include <FLAC/stream_decoder.h>
 #include <stdlib.h>
+#include <stdint.h>
 
 extern int
 get_decoder_channels(FLAC__StreamMetadata *metadata);
@@ -33,6 +34,21 @@ decoderWriteCallback_cgo(const FLAC__StreamDecoder *,
                  const FLAC__Frame *,
                  const FLAC__int32 **,
                  void *);
+
+// decoder_init_file_handle wraps FLAC__stream_decoder_init_file,
+// accepting client_data as uintptr_t instead of void*.
+// This avoids creating an unsafe.Pointer from a cgo.Handle on the Go side.
+static inline FLAC__StreamDecoderInitStatus
+decoder_init_file_handle(FLAC__StreamDecoder *decoder,
+                         const char *filename,
+                         FLAC__StreamDecoderWriteCallback write_cb,
+                         FLAC__StreamDecoderMetadataCallback metadata_cb,
+                         FLAC__StreamDecoderErrorCallback error_cb,
+                         uintptr_t handle)
+{
+    return FLAC__stream_decoder_init_file(
+        decoder, filename, write_cb, metadata_cb, error_cb, (void *)handle);
+}
 */
 import "C"
 
@@ -151,7 +167,10 @@ func (d *FlacDecoder) Delete() error {
 		C.FLAC__stream_decoder_delete(d.decoder)
 		d.decoder = nil
 	}
-	d.hDecoder.Delete()
+	if d.hDecoder != 0 {
+		d.hDecoder.Delete()
+		d.hDecoder = 0
+	}
 	return nil
 }
 
@@ -186,14 +205,14 @@ func (d *FlacDecoder) Open(filePath string) error {
 	d.lastError = nil
 	d.ringBuffer.Reset()
 
-	// Pass the handle value directly as client_data (not a pointer to it).
-	// Storing a Go pointer (&d.hDecoder) in C memory violates cgo rules and
-	// can cause "bad pointer in Go heap" crashes during GC.
-	status := C.FLAC__stream_decoder_init_file(d.decoder, filename,
+	// Pass the handle as uintptr_t via C helper to avoid creating an
+	// unsafe.Pointer from a cgo.Handle (which is a uintptr, not a real pointer).
+	// The C helper casts uintptr_t → void* for libFLAC's client_data parameter.
+	status := C.decoder_init_file_handle(d.decoder, filename,
 		writeCallback,
 		metadataCallback,
 		errorCallback,
-		unsafe.Pointer(d.hDecoder),
+		C.uintptr_t(d.hDecoder),
 	)
 
 	if status != C.FLAC__STREAM_DECODER_INIT_STATUS_OK {
@@ -410,7 +429,7 @@ func (d *FlacDecoder) setError(err error) {
 
 //export decoderErrorCallback
 func decoderErrorCallback(d *C.FLAC__StreamDecoder, status C.FLAC__StreamDecoderErrorStatus, data unsafe.Pointer) {
-	h := cgo.Handle(data)
+	h := cgo.Handle(uintptr(data))
 	dec := h.Value().(*FlacDecoder)
 
 	var errMsg string
@@ -433,14 +452,14 @@ func decoderErrorCallback(d *C.FLAC__StreamDecoder, status C.FLAC__StreamDecoder
 		errMsg = fmt.Sprintf("unknown error status: %d", status)
 	}
 
-	dec.lastError = fmt.Errorf("FLAC decoder error: %s", errMsg)
+	dec.setError(fmt.Errorf("FLAC decoder error: %s", errMsg))
 	slog.Error("FLAC decoder error callback", "error", errMsg, "status", int(status))
 }
 
 //export decoderWriteCallback
 func decoderWriteCallback(decoder *C.FLAC__StreamDecoder, frame *C.FLAC__Frame, buffer **C.FLAC__int32, client_data unsafe.Pointer) C.FLAC__StreamDecoderWriteStatus {
 
-	h := cgo.Handle(client_data)
+	h := cgo.Handle(uintptr(client_data))
 	dec := h.Value().(*FlacDecoder)
 
 	sampleCount := int64(frame.header.blocksize)
@@ -529,7 +548,7 @@ func decoderWriteCallback(decoder *C.FLAC__StreamDecoder, frame *C.FLAC__Frame, 
 
 //export decoderMetadataCallback
 func decoderMetadataCallback(d *C.FLAC__StreamDecoder, metadata *C.FLAC__StreamMetadata, client_data unsafe.Pointer) {
-	h := cgo.Handle(client_data)
+	h := cgo.Handle(uintptr(client_data))
 	dec := h.Value().(*FlacDecoder)
 
 	if metadata._type == C.FLAC__METADATA_TYPE_STREAMINFO {
@@ -555,7 +574,11 @@ func getStreamDecoderInitStatusString(status C.FLAC__StreamDecoderInitStatus) st
 	length := 5
 	slice := unsafe.Slice(theCArray, length)
 
-	return C.GoString(slice[status])
+	idx := int(status)
+	if idx < 0 || idx >= length {
+		return fmt.Sprintf("unknown status %d", idx)
+	}
+	return C.GoString(slice[idx])
 }
 
 func int32toInt24LEBytes(n int32, out *[3]byte) {

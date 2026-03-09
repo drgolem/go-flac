@@ -6,6 +6,7 @@ package flac
 #include <FLAC/metadata.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 
 extern unsigned int get_min_blocksize(FLAC__StreamMetadata *metadata);
 extern unsigned int get_max_blocksize(FLAC__StreamMetadata *metadata);
@@ -29,6 +30,21 @@ extern void
 encoderMetadataCallback_cgo(const FLAC__StreamEncoder *encoder,
                             const FLAC__StreamMetadata *metadata,
                             void *client_data);
+
+// encoder_init_stream_handle wraps FLAC__stream_encoder_init_stream,
+// accepting client_data as uintptr_t instead of void*.
+// This avoids creating an unsafe.Pointer from a cgo.Handle (which is
+// a uintptr, not a real pointer) on the Go side — doing so violates
+// Go's pointer rules and causes "bad pointer in Go heap" GC crashes.
+static inline FLAC__StreamEncoderInitStatus
+encoder_init_stream_handle(FLAC__StreamEncoder *encoder,
+                           FLAC__StreamEncoderWriteCallback write_cb,
+                           FLAC__StreamEncoderMetadataCallback metadata_cb,
+                           uintptr_t handle)
+{
+    return FLAC__stream_encoder_init_stream(
+        encoder, write_cb, NULL, NULL, metadata_cb, (void *)handle);
+}
 */
 import "C"
 
@@ -183,13 +199,11 @@ func (e *FlacEncoder) InitStream() error {
 	writeCallback := C.FLAC__StreamEncoderWriteCallback(unsafe.Pointer(C.encoderWriteCallback_cgo))
 	metadataCallback := C.FLAC__StreamEncoderMetadataCallback(unsafe.Pointer(C.encoderMetadataCallback_cgo))
 
-	status := C.FLAC__stream_encoder_init_stream(
+	status := C.encoder_init_stream_handle(
 		e.encoder,
 		writeCallback,
-		nil, // no seek callback
-		nil, // no tell callback
 		metadataCallback,
-		unsafe.Pointer(e.hEncoder),
+		C.uintptr_t(e.hEncoder),
 	)
 	if status != C.FLAC__STREAM_ENCODER_INIT_STATUS_OK {
 		return fmt.Errorf("init stream encoder error: %s", getStreamEncoderInitStatusString(status))
@@ -310,7 +324,7 @@ func encoderWriteCallback(
 	currentFrame C.uint32_t,
 	clientData unsafe.Pointer,
 ) C.FLAC__StreamEncoderWriteStatus {
-	h := cgo.Handle(clientData)
+	h := cgo.Handle(uintptr(clientData))
 	enc := h.Value().(*FlacEncoder)
 
 	data := C.GoBytes(unsafe.Pointer(buffer), C.int(bytes))
@@ -328,7 +342,7 @@ func encoderMetadataCallback(
 	metadata *C.FLAC__StreamMetadata,
 	clientData unsafe.Pointer,
 ) {
-	h := cgo.Handle(clientData)
+	h := cgo.Handle(uintptr(clientData))
 	enc := h.Value().(*FlacEncoder)
 
 	if metadata._type != C.FLAC__METADATA_TYPE_STREAMINFO {

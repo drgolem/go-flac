@@ -375,6 +375,241 @@ func TestFlacEncoder_Mono(t *testing.T) {
 	}
 }
 
+func TestFlacEncoder_StreamInfo(t *testing.T) {
+	enc, err := NewFlacEncoder(44100, 2, 16)
+	if err != nil {
+		t.Fatalf("Failed to create encoder: %v", err)
+	}
+	defer enc.Close()
+
+	// StreamInfo before init should return nil
+	si := enc.StreamInfo()
+	if si != nil {
+		t.Error("StreamInfo before init should return nil")
+	}
+
+	if err := enc.InitStream(); err != nil {
+		t.Fatalf("InitStream failed: %v", err)
+	}
+
+	// Feed some audio
+	numSamples := 4096
+	samples := make([]int32, numSamples*2)
+	for i := range samples {
+		samples[i] = int32(i % 1000)
+	}
+	if err := enc.ProcessInterleaved(samples, numSamples); err != nil {
+		t.Fatalf("ProcessInterleaved failed: %v", err)
+	}
+
+	// Finish to finalize STREAMINFO (includes MD5, total samples)
+	if err := enc.Finish(); err != nil {
+		t.Fatalf("Finish failed: %v", err)
+	}
+
+	si = enc.StreamInfo()
+	if si == nil {
+		t.Error("StreamInfo after Finish should not be nil")
+	} else if len(si) != 34 {
+		t.Errorf("StreamInfo should be 34 bytes, got %d", len(si))
+	}
+}
+
+func TestFlacEncoder_TakeBytes(t *testing.T) {
+	enc, err := NewFlacEncoder(44100, 2, 16)
+	if err != nil {
+		t.Fatalf("Failed to create encoder: %v", err)
+	}
+	defer enc.Close()
+
+	if err := enc.InitStream(); err != nil {
+		t.Fatalf("InitStream failed: %v", err)
+	}
+
+	// InitStream produces the FLAC header (fLaC marker + STREAMINFO)
+	header := enc.TakeBytes()
+	if len(header) == 0 {
+		t.Error("Expected FLAC header bytes after InitStream")
+	}
+
+	// Second take with no new data should return empty
+	bytes := enc.TakeBytes()
+	if len(bytes) != 0 {
+		t.Errorf("Expected empty bytes on second take, got %d bytes", len(bytes))
+	}
+
+	enc.Finish()
+}
+
+func TestFlacEncoder_SetTotalSamplesEstimate(t *testing.T) {
+	enc, err := NewFlacEncoder(44100, 2, 16)
+	if err != nil {
+		t.Fatalf("Failed to create encoder: %v", err)
+	}
+	defer enc.Close()
+
+	// Valid estimate before init
+	if err := enc.SetTotalSamplesEstimate(100000); err != nil {
+		t.Errorf("SetTotalSamplesEstimate failed: %v", err)
+	}
+
+	if err := enc.InitStream(); err != nil {
+		t.Fatalf("InitStream failed: %v", err)
+	}
+
+	// After init should fail
+	err = enc.SetTotalSamplesEstimate(200000)
+	if err == nil {
+		t.Error("SetTotalSamplesEstimate after init should fail")
+	}
+
+	enc.Finish()
+}
+
+func TestFlacEncoder_DoubleClose(t *testing.T) {
+	enc, err := NewFlacEncoder(44100, 2, 16)
+	if err != nil {
+		t.Fatalf("Failed to create encoder: %v", err)
+	}
+
+	if err := enc.InitStream(); err != nil {
+		t.Fatalf("InitStream failed: %v", err)
+	}
+	enc.Finish()
+
+	// Double close should not panic
+	enc.Close()
+	enc.Close()
+}
+
+func TestFlacEncoder_StreamEncodeAndDecode(t *testing.T) {
+	// Encode via stream mode, write bytes to file, decode and verify
+	enc, err := NewFlacEncoder(44100, 2, 16)
+	if err != nil {
+		t.Fatalf("Failed to create encoder: %v", err)
+	}
+
+	if err := enc.SetTotalSamplesEstimate(8192); err != nil {
+		t.Fatalf("SetTotalSamplesEstimate failed: %v", err)
+	}
+	if err := enc.InitStream(); err != nil {
+		t.Fatalf("InitStream failed: %v", err)
+	}
+
+	// Generate and encode test signal
+	numSamples := 8192
+	origSamples := generateTestSignal(numSamples, 2, 16)
+
+	var allBytes []byte
+
+	// Feed in chunks to simulate streaming
+	chunkSize := 1024
+	for fed := 0; fed < numSamples; fed += chunkSize {
+		end := fed + chunkSize
+		if end > numSamples {
+			end = numSamples
+		}
+		chunk := end - fed
+		start := fed * 2
+		sliceEnd := start + chunk*2
+		if err := enc.ProcessInterleaved(origSamples[start:sliceEnd], chunk); err != nil {
+			t.Fatalf("ProcessInterleaved failed at sample %d: %v", fed, err)
+		}
+		bytes := enc.TakeBytes()
+		allBytes = append(allBytes, bytes...)
+	}
+
+	if err := enc.Finish(); err != nil {
+		t.Fatalf("Finish failed: %v", err)
+	}
+	allBytes = append(allBytes, enc.TakeBytes()...)
+	enc.Close()
+
+	// Write to temp file
+	tmpDir := t.TempDir()
+	flacFile := filepath.Join(tmpDir, "stream.flac")
+	if err := os.WriteFile(flacFile, allBytes, 0644); err != nil {
+		t.Fatalf("Failed to write FLAC file: %v", err)
+	}
+
+	// Decode and verify
+	dec, err := NewFlacFrameDecoder(16)
+	if err != nil {
+		t.Fatalf("Failed to create decoder: %v", err)
+	}
+	defer dec.Delete()
+
+	if err := dec.Open(flacFile); err != nil {
+		t.Fatalf("Failed to open stream-encoded FLAC: %v", err)
+	}
+	defer dec.Close()
+
+	rate, channels, bps := dec.GetFormat()
+	if rate != 44100 || channels != 2 || bps != 16 {
+		t.Errorf("Format mismatch: got %d/%d/%d, want 44100/2/16", rate, channels, bps)
+	}
+
+	total := dec.TotalSamples()
+	if total != int64(numSamples) {
+		t.Errorf("Total samples: got %d, want %d", total, numSamples)
+	}
+
+	// Decode all and compare
+	pcmBuf := make([]byte, numSamples*2*2) // stereo 16-bit
+	decoded := 0
+	for decoded < numSamples {
+		n, err := dec.DecodeSamples(numSamples-decoded, pcmBuf[decoded*4:])
+		if err != nil {
+			break
+		}
+		if n == 0 {
+			break
+		}
+		decoded += n
+	}
+
+	if decoded != numSamples {
+		t.Fatalf("Decoded %d samples, want %d", decoded, numSamples)
+	}
+
+	decodedSamples := make([]int32, numSamples*2)
+	PCMToInt32(pcmBuf, 16, decodedSamples)
+
+	mismatches := 0
+	for i := 0; i < numSamples*2; i++ {
+		if origSamples[i] != decodedSamples[i] {
+			mismatches++
+		}
+	}
+	if mismatches > 0 {
+		t.Errorf("Stream encode round-trip: %d mismatches out of %d samples", mismatches, numSamples*2)
+	}
+}
+
+func TestPCMToInt32_8bit(t *testing.T) {
+	// FLAC 8-bit is signed: int8 range [-128, 127]
+	pcm := []byte{
+		0x00, // 0
+		0x01, // 1
+		0xFF, // -1 (signed)
+		0x7F, // 127 (max positive)
+		0x80, // -128 (min negative)
+	}
+
+	out := make([]int32, 5)
+	n := PCMToInt32(pcm, 8, out)
+	if n != 5 {
+		t.Fatalf("Expected 5 samples, got %d", n)
+	}
+
+	expected := []int32{0, 1, -1, 127, -128}
+	for i, exp := range expected {
+		if out[i] != exp {
+			t.Errorf("Sample %d: expected %d, got %d", i, exp, out[i])
+		}
+	}
+}
+
 func TestPCMToInt32_16bit(t *testing.T) {
 	// Little-endian 16-bit samples: 0, 1, -1, 32767, -32768
 	pcm := []byte{
